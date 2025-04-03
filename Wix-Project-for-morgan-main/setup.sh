@@ -7,7 +7,6 @@ apt-get install -y \
     wget \
     chromium \
     chromium-driver \
-    fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
@@ -27,11 +26,7 @@ apt-get install -y \
     libxdamage1 \
     libxext6 \
     libxfixes3 \
-    libxrandr2 \
-    libxshmfence1
+    libxrandr2
 
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Symlink chromium to google-chrome
+# Symlink chromium to where Chrome is expected
 ln -s /usr/bin/chromium /usr/bin/google-chrome
