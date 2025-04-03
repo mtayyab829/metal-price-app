@@ -1,112 +1,160 @@
 import streamlit as st
+import platform
+import os
+import subprocess
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+import yfinance as yf
+import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
+
+# Check and install dependencies if needed
 try:
+    import yfinance
+    import pandas
+    import matplotlib
+    from selenium import webdriver
+except ImportError as e:
+    st.warning(f"Installing missing dependencies: {e}")
+    subprocess.check_call(["pip", "install", "yfinance", "pandas", "matplotlib", "selenium", "webdriver-manager"])
     import yfinance as yf
     import pandas as pd
     import matplotlib.pyplot as plt
-    from io import BytesIO
     from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.chrome.options import Options
-    from webdriver_manager.chrome import ChromeDriverManager
-except ImportError as e:
-    st.error(f"Missing dependency: {e}. Please check requirements.txt")
-    st.stop()
 
-# Function to scrape metal prices using Selenium
-def get_metal_prices():
+# Configure Selenium for Streamlit Cloud
+def setup_selenium():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
     
+    # Set up ChromeDriver
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
-    
-    url = "https://www.metalsdaily.com/live-prices/pgms/"
-    driver.get(url)
-    
-    rows = driver.find_elements("xpath", "//table//tr")
-    metal_prices = {}
+    return driver
 
-    for row in rows:
-        cols = row.find_elements("tag name", "td")
-        if len(cols) > 2:
-            metal = cols[0].text.strip()
-            ask_price = cols[2].text.strip()  # Ask price is in column index 2
-            
-            if "USD/OZ" in metal:
-                metal_name = metal.replace("USD/OZ", "").strip()
-                try:
-                    metal_prices[metal_name] = float(ask_price.replace(',', '')) / 28  # Convert to per gram
-                except ValueError:
-                    pass  # Skip if conversion fails
+# Function to scrape metal prices with improved error handling
+def get_metal_prices():
+    driver = None
+    try:
+        driver = setup_selenium()
+        url = "https://www.metalsdaily.com/live-prices/pgms/"
+        driver.get(url)
         
-        elif len(cols) > 1:
-            metal = cols[0].text.strip()
-            price = cols[1].text.strip()
-            if "USD/OZ" in metal:
-                metal_name = metal.replace("USD/OZ", "").strip()
-                try:
-                    metal_prices[metal_name] = float(price.replace(',', '')) / 28  # Convert to per gram
-                except ValueError:
-                    pass  # Skip if conversion fails
+        # Wait for table to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "table"))
+        
+        rows = driver.find_elements(By.XPATH, "//table//tr")
+        metal_prices = {}
 
-    driver.quit()
-    return metal_prices
+        for row in rows:
+            cols = row.find_elements(By.TAG_NAME, "td")
+            if len(cols) > 2:
+                metal = cols[0].text.strip()
+                ask_price = cols[2].text.strip()
+                
+                if "USD/OZ" in metal:
+                    metal_name = metal.replace("USD/OZ", "").strip()
+                    try:
+                        metal_prices[metal_name] = float(ask_price.replace(',', '')) / 28
+                    except ValueError:
+                        continue
+        
+        return metal_prices
+        
+    except Exception as e:
+        st.warning(f"Couldn't scrape live prices: {str(e)}")
+        return {}
+    finally:
+        if driver:
+            driver.quit()
 
-# Fetch historical data for metals from Yahoo Finance
+# Fetch historical data with error handling
 def get_metal_data(ticker):
-    data = yf.Ticker(ticker).history(period="1y")
-    data.index = pd.to_datetime(data.index)
-    return data
+    try:
+        data = yf.Ticker(ticker).history(period="1y")
+        data.index = pd.to_datetime(data.index)
+        return data
+    except Exception as e:
+        st.warning(f"Couldn't fetch {ticker} data: {str(e)}")
+        return pd.DataFrame()
 
 # Streamlit UI
 st.title("Metal Price Dashboard")
 
-# st.image("logo.jpg", use_column_width=True)
+# Main app logic
+try:
+    with st.spinner("Fetching data..."):
+        metal_prices = get_metal_prices()
+        gold_data = get_metal_data("GC=F")
+        silver_data = get_metal_data("SI=F")
 
-# Scrape real-time metal prices
-with st.spinner("Fetching live metal prices..."):
-    metal_prices = get_metal_prices()
-    
-# Historical Data Fallback (Gold & Silver from Yahoo Finance)
-gold_data = get_metal_data("GC=F")
-silver_data = get_metal_data("SI=F")
+    # Display prices
+    st.subheader("Current Prices per Gram")
+    if metal_prices:
+        col1, col2 = st.columns(2)
+        for i, (metal, price) in enumerate(metal_prices.items()):
+            if i % 2 == 0:
+                with col1:
+                    st.metric(label=f"{metal}", value=f"${price:.2f}")
+            else:
+                with col2:
+                    st.metric(label=f"{metal}", value=f"${price:.2f}")
+    else:
+        st.warning("Using Yahoo Finance fallback data")
+        if not gold_data.empty:
+            gold_price = gold_data['Close'].iloc[-1] / 28
+            st.metric(label="Gold", value=f"${gold_price:.2f}")
+        if not silver_data.empty:
+            silver_price = silver_data['Close'].iloc[-1] / 28
+            st.metric(label="Silver", value=f"${silver_price:.2f}")
 
-gold_price = metal_prices.get("Gold", gold_data['Close'].iloc[-1] / 28)  # Use scraped price or fallback
-silver_price = metal_prices.get("Silver", silver_data['Close'].iloc[-1] / 28)
+    # Plot charts with improved error handling
+    def plot_chart(data, title):
+        if data.empty:
+            st.warning(f"No data available for {title}")
+            return
+            
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(data.index, data['Close'])
+        ax.set_title(title)
+        ax.grid(True)
+        st.pyplot(fig)
 
-metal_prices["GOLD"] = gold_price
-metal_prices["SILVER"] = silver_price
+    st.subheader("Historical Prices")
+    plot_chart(gold_data, "Gold Price History")
+    plot_chart(silver_data, "Silver Price History")
 
-# Display real-time prices
-st.subheader("Current Prices per Gram (Live)")
-for metal, price in metal_prices.items():
-    st.metric(label=f"{metal} Price", value=f"${price:.2f}")
+    # Jewelry calculator
+    st.subheader("Jewelry Value Calculator")
+    metals = list(metal_prices.keys()) if metal_prices else ["Gold", "Silver"]
+    metal_choice = st.selectbox("Select Metal", metals)
+    weight = st.number_input("Enter weight in grams", min_value=0.0, value=1.0, step=0.1)
 
-# User Input for Jewelry Value Calculation
-st.subheader("Jewelry Value Calculator")
-metal_choice = st.selectbox("Select Metal", list(metal_prices.keys()))
-weight = st.number_input("Enter weight in grams", min_value=0.0, value=0.0, step=0.1)
+    if metal_choice and weight > 0:
+        if metal_prices:
+            price = metal_prices[metal_choice]
+        elif metal_choice == "Gold" and not gold_data.empty:
+            price = gold_data['Close'].iloc[-1] / 28
+        elif metal_choice == "Silver" and not silver_data.empty:
+            price = silver_data['Close'].iloc[-1] / 28
+        else:
+            price = 0
+            
+        jewelry_value = price * weight
+        st.success(f"Estimated {metal_choice} Jewelry Value: ${jewelry_value:.2f}")
 
-if metal_choice and weight > 0:
-    jewelry_value = metal_prices[metal_choice] * weight
-    st.subheader(f"Estimated Jewelry Value: ${jewelry_value:.2f}")
-
-# Plot Price Charts
-def plot_line_chart(data, title):
-    plt.figure(figsize=(10, 5))
-    plt.plot(data.index, data['Close'], label="Close Price")
-    plt.title(title)
-    plt.xlabel("Date")
-    plt.ylabel("Price (USD)")
-    plt.grid(True)
-    plt.legend()
-
-    buf = BytesIO()
-    plt.savefig(buf, format="png")
-    buf.seek(0)
-    st.image(buf)
-
-st.subheader("Gold & Silver Price Charts")
-plot_line_chart(gold_data, "Gold Price Chart")
-plot_line_chart(silver_data, "Silver Price Chart")
-st.subheader("Powered by Gilbert Systems 📊")
+except Exception as e:
+    st.error(f"Application error: {str(e)}")
+finally:
+    st.subheader("Powered by Gilbert Systems 📊")
