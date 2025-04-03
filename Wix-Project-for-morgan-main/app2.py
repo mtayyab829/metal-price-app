@@ -1,12 +1,16 @@
 import streamlit as st
-import yfinance as yf
-import pandas as pd
-import matplotlib.pyplot as plt
-from io import BytesIO
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+try:
+    import yfinance as yf
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError as e:
+    st.error(f"Missing dependency: {e}. Please check requirements.txt")
+    st.stop()
 
 # Function to scrape metal prices using Selenium
 def get_metal_prices():
